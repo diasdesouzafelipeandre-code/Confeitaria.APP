@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DoceGestão — Painel</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    .muted{color:#6b7280}
+    .card { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 6px 18px rgba(15,23,42,0.06); }
+    .modal-backdrop{ background: rgba(0,0,0,0.45); }
+    table th, table td{ padding:8px 10px; }
+    /* toast */
+    #toast { position: fixed; right: 20px; top: 20px; z-index: 60; }
+    .toast { margin-bottom:8px; padding:10px 14px; border-radius:8px; color:white; box-shadow:0 6px 18px rgba(15,23,42,0.08); }
+    .toast.success{ background:linear-gradient(90deg,#16a34a,#059669); }
+    .toast.error{ background:linear-gradient(90deg,#ef4444,#dc2626); }
+  </style>
+</head>
+<body class="bg-rose-50 font-sans text-stone-800">
+  <header class="bg-white shadow sticky top-0 z-30">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <i class="fa-solid fa-cake-candles text-2xl text-rose-500"></i>
+        <h1 class="text-lg font-semibold">DoceGestão</h1>
+        <span class="muted ml-2">painel</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="btnRefresh" class="px-3 py-2 bg-rose-500 text-white rounded hover:bg-rose-600"><i class="fa-solid fa-arrows-rotate"></i></button>
+        <button id="btnAddProduct" class="px-3 py-2 bg-rose-500 text-white rounded flex items-center gap-2"><i class="fa-solid fa-plus"></i> Produto</button>
+        <button id="btnAddIngredient" class="px-3 py-2 bg-rose-500 text-white rounded flex items-center gap-2"><i class="fa-solid fa-boxes-stacked"></i> Insumo</button>
+        <button id="btnManageRecipes" class="px-3 py-2 bg-rose-500 text-white rounded flex items-center gap-2"><i class="fa-solid fa-book-open"></i> Receita</button>
+        <button id="btnAddClient" class="px-3 py-2 bg-rose-500 text-white rounded flex items-center gap-2"><i class="fa-solid fa-user-plus"></i> Cliente</button>
+        <button id="btnNewOrder" class="px-3 py-2 bg-amber-500 text-white rounded flex items-center gap-2"><i class="fa-solid fa-file-invoice-dollar"></i> Pedido</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-4 py-6">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <section class="card">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-base font-semibold">Produtos</h2>
+          <span id="productsCount" class="muted"></span>
+        </div>
+        <div id="productsList" class="space-y-2"></div>
+      </section>
+
+      <section class="card">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-base font-semibold">Insumos</h2>
+          <span id="ingredientsCount" class="muted"></span>
+        </div>
+        <div id="ingredientsList" class="space-y-2"></div>
+      </section>
+
+      <section class="card">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-base font-semibold">Pedidos</h2>
+          <span id="ordersCount" class="muted"></span>
+        </div>
+        <div id="ordersList"></div>
+      </section>
+    </div>
+
+    <section class="mt-6 card">
+      <h3 class="font-semibold mb-2">Vendas recentes</h3>
+      <div id="salesArea" class="muted">Carregando...</div>
+    </section>
+  </main>
+
+  <!-- Modals -->
+  <div id="modalProduct" class="hidden fixed inset-0 modal-backdrop flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-md rounded-lg p-4">
+      <div class="flex justify-between items-center mb-2">
+        <strong id="productModalTitle">Novo Produto</strong>
+        <button class="btnClose text-stone-500">✕</button>
+      </div>
+      <form id="formProduct" class="space-y-2">
+        <input id="prod_name" class="w-full border rounded px-3 py-2" placeholder="Nome*" required />
+        <div class="grid grid-cols-2 gap-2"><input id="prod_price" type="number" min="0" step="0.01" class="border rounded px-3 py-2" placeholder="Preço de venda*" required /><input id="prod_cost" type="number" min="0" step="0.01" class="border rounded px-3 py-2" placeholder="Custo unitário*" required /></div>
+        <div class="flex justify-end gap-2"><button type="button" class="btnClose px-3 py-1 rounded bg-gray-100">Cancelar</button><button type="submit" class="px-3 py-1 rounded bg-rose-500 text-white">Salvar</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div id="modalProductHistory" class="hidden fixed inset-0 modal-backdrop flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-xl rounded-lg p-4 max-h-[85vh] overflow-auto">
+      <div class="flex justify-between items-center mb-3">
+        <strong id="productHistoryTitle">Histórico do produto</strong>
+        <button class="btnClose text-stone-500" aria-label="Fechar">✕</button>
+      </div>
+      <div id="productHistoryList" class="space-y-2"></div>
+    </div>
+  </div>
+
+  <div id="modalIngredient" class="hidden fixed inset-0 modal-backdrop flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-md rounded-lg p-4">
+      <div class="flex justify-between items-center mb-2">
+        <strong>Novo Insumo</strong>
+        <button class="btnClose text-stone-500">✕</button>
+      </div>
+      <form id="formIngredient" class="space-y-2">
+        <input id="ing_name" class="w-full border rounded px-3 py-2" placeholder="Nome*" required />
+        <div class="grid grid-cols-3 gap-2"><select id="ing_unit" class="border rounded px-3 py-2"><option value="g">g</option><option value="ml">ml</option><option value="un">un</option></select><input id="ing_min" type="number" step="0.01" class="border rounded px-3 py-2" placeholder="Estoque mínimo" /></div>
+        <div class="flex justify-end gap-2"><button type="button" class="btnClose px-3 py-1 rounded bg-gray-100">Cancelar</button><button type="submit" class="px-3 py-1 rounded bg-rose-500 text-white">Salvar</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div id="modalRecipe" class="hidden fixed inset-0 modal-backdrop flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-2xl rounded-lg p-4 max-h-[85vh] overflow-auto">
+      <div class="flex justify-between items-center mb-2">
+        <strong>Gerenciar Receita</strong>
+        <button class="btnClose text-stone-500">✕</button>
+      </div>
+      <form id="formRecipe" class="space-y-3">
+        <div class="grid grid-cols-2 gap-2">
+          <select id="recipe_product" class="border rounded px-3 py-2"><option value="">— selecione produto —</option></select>
+          <input id="recipe_yield" type="number" step="0.01" class="border rounded px-3 py-2" placeholder="Rendimento (un por batch)*" />
+        </div>
+        <div id="recipe_items_container" class="space-y-2">
+          <!-- recipe item rows inserted here -->
+        </div>
+        <div class="flex gap-2"><button type="button" id="btnAddRecipeItem" class="px-3 py-1 rounded bg-gray-100">Adicionar insumo</button></div>
+        <div class="flex justify-end gap-2"><button type="button" class="btnClose px-3 py-1 rounded bg-gray-100">Cancelar</button><button type="submit" class="px-3 py-1 rounded bg-rose-500 text-white">Salvar Receita</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div id="modalClient" class="hidden fixed inset-0 modal-backdrop flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-md rounded-lg p-4">
+      <div class="flex justify-between items-center mb-2">
+        <strong>Novo Cliente</strong>
+        <button class="btnClose text-stone-500">✕</button>
+      </div>
+      <form id="formClient" class="space-y-2">
+        <input id="cl_name" class="w-full border rounded px-3 py-2" placeholder="Nome*" required />
+        <div class="grid grid-cols-2 gap-2"><input id="cl_phone" class="border rounded px-3 py-2" placeholder="Telefone" /><input id="cl_origin" class="border rounded px-3 py-2" placeholder="Origem" /></div>
+        <textarea id="cl_notes" class="w-full border rounded px-3 py-2" placeholder="Observações"></textarea>
+        <div class="flex justify-end gap-2"><button type="button" class="btnClose px-3 py-1 rounded bg-gray-100">Cancelar</button><button type="submit" class="px-3 py-1 rounded bg-rose-500 text-white">Salvar</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div id="modalOrder" class="hidden fixed inset-0 modal-backdrop flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-2xl rounded-lg p-4 max-h-[85vh] overflow-auto">
+      <div class="flex justify-between items-center mb-2">
+        <strong>Novo Pedido</strong>
+        <button class="btnClose text-stone-500">✕</button>
+      </div>
+      <form id="formOrder" class="space-y-3">
+        <select id="order_client" class="w-full border rounded px-3 py-2"></select>
+        <div id="order_items_container" class="space-y-2">
+          <div class="order-item grid grid-cols-12 gap-2 items-center">
+            <div class="col-span-7"><select class="order-prod w-full border rounded px-3 py-2"></select></div>
+            <div class="col-span-3"><input type="number" min="1" value="1" class="order-qty w-full border rounded px-3 py-2" /></div>
+            <div class="col-span-2 text-right"><button type="button" class="btnRemoveItem px-3 py-1 rounded bg-gray-100">Remover</button></div>
+          </div>
+        </div>
+        <div class="flex gap-2"><button type="button" id="btnAddItem" class="px-3 py-1 rounded bg-gray-100">Adicionar item</button></div>
+        <div class="flex justify-end gap-2"><button type="button" class="btnClose px-3 py-1 rounded bg-gray-100">Cancelar</button><button type="submit" class="px-3 py-1 rounded bg-amber-500 text-white">Criar Pedido</button></div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    // util
+    function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+    function formatCurrency(v){ try{ return new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(Number(v)||0); }catch(e){ return 'R$ '+Number(v||0).toFixed(2); } }
+
+    // toast notifications
+    function showToast(type, message, ms=3000){ let container=document.getElementById('toast'); if(!container){ container=document.createElement('div'); container.id='toast'; document.body.appendChild(container); } const el=document.createElement('div'); el.className=`toast ${type}`; el.innerText=message; container.appendChild(el); setTimeout(()=> el.classList.add('fade'),10); setTimeout(()=> el.remove(), ms); }
+
+    const state = { products:[], ingredients:[], clients:[], sales:[], expenses:[], losses:[], recipes:{} };
+    let editingProductId = null;
+
+    async function loadState(){
+      try{
+        const res = await fetch('/api/state'); if(!res.ok) throw new Error('API');
+        const data = await res.json();
+        state.products = (data.products||[]).map(p=>({ id:p.id, name:p.name||p.nome, price:p.price||p.preco_venda||0, unitCost:p.unitCost||p.custo_unitario||0 }));
+        state.ingredients = (data.ingredients||[]).map(i=>({ id:i.id, name:i.name, unit:i.unit, currentStock:i.currentStock||0, unitCost:i.unitCost||0 }));
+        state.clients = (data.clients||[]).map(c=>({ id:c.id, name:c.name||c.nome }));
+        state.sales = data.sales||[];
+        state.expenses = data.expenses||[];
+        state.losses = data.losses||[];
+        state.recipes = data.recipes||{};
+        renderAll();
+      }catch(e){ console.warn('API fallback', e); renderAll(); }
+    }
+
+    function renderAll(){
+      // products
+      document.getElementById('productsCount').innerText = `${state.products.length}`;
+      const pnode = document.getElementById('productsList'); pnode.innerHTML = '';
+        state.products.forEach(p=>{
+        const d = document.createElement('div'); d.className='flex items-center justify-between';
+        d.innerHTML = `<div><strong>${escapeHtml(p.name)}</strong><div class=\"muted text-sm\">Preço: ${formatCurrency(p.price)} • Custo: ${formatCurrency(p.unitCost||0)}</div></div><div class=\"text-sm muted\">ID ${p.id}</div>`;
+        const actions = document.createElement('div'); actions.className='flex items-center gap-2 ml-3';
+        const editButton = document.createElement('button'); editButton.type='button'; editButton.className='text-rose-600 hover:text-rose-800'; editButton.title='Editar produto'; editButton.setAttribute('aria-label', `Editar ${p.name}`); editButton.innerHTML='<i class="fa-solid fa-pen-to-square"></i>'; editButton.addEventListener('click', ()=> openProductEditor(p.id));
+        const historyButton = document.createElement('button'); historyButton.type='button'; historyButton.className='text-stone-500 hover:text-stone-800'; historyButton.title='Ver histórico de preços'; historyButton.setAttribute('aria-label', `Histórico de ${p.name}`); historyButton.innerHTML='<i class="fa-solid fa-clock-rotate-left"></i>'; historyButton.addEventListener('click', ()=> openProductHistory(p));
+        actions.append(editButton, historyButton); d.appendChild(actions);
+        pnode.appendChild(d);
+      });
+
+      // ingredients
+      document.getElementById('ingredientsCount').innerText = `${state.ingredients.length}`;
+      const inode = document.getElementById('ingredientsList'); inode.innerHTML = '';
+        state.ingredients.forEach(i=>{
+        const d = document.createElement('div'); d.className='flex items-center justify-between';
+        d.innerHTML = `<div><strong>${escapeHtml(i.name)}</strong><div class=\"muted text-sm\">Estoque: ${Number(i.currentStock||0)} ${i.unit} • Custo: ${formatCurrency(i.unitCost||0)}</div></div><div class=\"text-sm muted\">ID ${i.id}</div>`;
+        inode.appendChild(d);
+      });
+
+      // orders
+      document.getElementById('ordersCount').innerText = `${state.sales.length}`;
+      const onode = document.getElementById('ordersList'); onode.innerHTML = '';
+      if(!state.sales.length){ onode.innerHTML = '<div class="muted">Nenhum pedido.</div>'; }
+      else{
+        const table = document.createElement('table'); table.className='w-full';
+        table.innerHTML = `<thead class=\"text-left text-sm muted\"><tr><th class=\"pr-4\">ID</th><th class=\"pr-4\">Cliente</th><th class=\"pr-4\">Data</th><th class=\"pr-4\">Status</th><th>Itens</th><th class=\"pl-4\">Ações</th></tr></thead>`;
+        const tb = document.createElement('tbody');
+        state.sales.forEach(s=>{
+          const tr = document.createElement('tr'); tr.className='border-t';
+          const client = state.clients.find(c=>c.id===s.clientId) || {name:'-'};
+          const itemsText = (s.items||[]).map(it=> `${(state.products.find(p=>p.id===it.productId)||{name:'?' }).name} x${it.qty}`).join(', ');
+          tr.innerHTML = `<td class=\"py-2 pr-4\">${s.id}</td><td class=\"py-2 pr-4\">${escapeHtml(client.name)}</td><td class=\"py-2 pr-4\">${escapeHtml(s.date||'')}</td><td class=\"py-2 pr-4\">${escapeHtml(s.status||'a_fazer')}</td><td class=\"py-2\">${escapeHtml(itemsText)}</td><td class=\"py-2 pl-4\"></td>`;
+          const actions = tr.querySelector('td:last-child');
+          const btnPay = document.createElement('button'); btnPay.className='px-2 py-1 mr-2 bg-emerald-500 text-white rounded text-sm'; btnPay.innerText='Pagar'; btnPay.onclick = ()=> updateOrderStatus(s.id,{paid:true});
+          const btnDeliver = document.createElement('button'); btnDeliver.className='px-2 py-1 mr-2 bg-sky-500 text-white rounded text-sm'; btnDeliver.innerText='Entregar'; btnDeliver.onclick = ()=> updateOrderStatus(s.id,{delivered:true});
+          const btnCancel = document.createElement('button'); btnCancel.className='px-2 py-1 bg-gray-100 rounded text-sm'; btnCancel.innerText='Cancelar'; btnCancel.onclick = ()=> { if(confirm('Cancelar pedido?')) updateOrderStatus(s.id,{canceled:true}); };
+          actions.appendChild(btnPay); actions.appendChild(btnDeliver); actions.appendChild(btnCancel);
+          tb.appendChild(tr);
+        });
+        table.appendChild(tb); onode.appendChild(table);
+      }
+
+      // vendas recentes
+      const sa = document.getElementById('salesArea');
+      if(!state.sales.length) sa.innerHTML = '<div class="muted">Nenhuma venda registrada.</div>';
+      else{
+        sa.innerHTML = state.sales.slice(0,8).map(s=>`<div class=\"py-1 border-b\">Pedido ${s.id} — ${escapeHtml((state.clients.find(c=>c.id===s.clientId)||{name:'-'}).name)} • ${escapeHtml(s.date||'')}</div>`).join('');
+      }
+    }
+
+    // modal helpers
+    function openModal(id){ document.getElementById(id).classList.remove('hidden'); }
+    function closeModal(id){ document.getElementById(id).classList.add('hidden'); }
+
+    function prepareProductCreate(){
+      editingProductId = null;
+      document.getElementById('formProduct').reset();
+      document.getElementById('productModalTitle').innerText = 'Novo Produto';
+      openModal('modalProduct');
+    }
+
+    function openProductEditor(productId){
+      const product = state.products.find(item=> item.id === productId);
+      if(!product){ showToast('error','Produto não encontrado'); return; }
+      editingProductId = product.id;
+      document.getElementById('prod_name').value = product.name;
+      document.getElementById('prod_price').value = product.price;
+      document.getElementById('prod_cost').value = product.unitCost;
+      document.getElementById('productModalTitle').innerText = 'Editar Produto';
+      openModal('modalProduct');
+    }
+
+    async function openProductHistory(product){
+      const list = document.getElementById('productHistoryList');
+      document.getElementById('productHistoryTitle').innerText = `Histórico: ${product.name}`;
+      list.innerHTML = '<p class="muted">Carregando...</p>';
+      openModal('modalProductHistory');
+      try{
+        const response = await fetch(`/api/products/${product.id}/price-history`);
+        if(!response.ok) throw new Error(await response.text());
+        const history = await response.json();
+        if(!history.length){ list.innerHTML = '<p class="muted">Nenhuma alteração de preço ou custo registrada.</p>'; return; }
+        list.innerHTML = history.map(entry=>`
+          <article class="border-t pt-2">
+            <div class="muted text-sm">${escapeHtml(entry.changedAt)} · ${escapeHtml(entry.source || 'sistema')}</div>
+            <div>Preço: ${formatCurrency(entry.previousPrice)} → <strong>${formatCurrency(entry.newPrice)}</strong></div>
+            <div>Custo: ${formatCurrency(entry.previousCost)} → <strong>${formatCurrency(entry.newCost)}</strong></div>
+          </article>`).join('');
+      }catch(error){
+        list.innerHTML = '<p class="text-red-600">Não foi possível carregar o histórico.</p>';
+      }
+    }
+
+    // wire buttons and forms
+    document.addEventListener('DOMContentLoaded', ()=>{
+      document.getElementById('btnRefresh').addEventListener('click', loadState);
+      document.getElementById('btnAddProduct').addEventListener('click', prepareProductCreate);
+      document.getElementById('btnAddIngredient').addEventListener('click', ()=> openModal('modalIngredient'));
+      document.getElementById('btnAddClient').addEventListener('click', ()=> openModal('modalClient'));
+      document.getElementById('btnNewOrder').addEventListener('click', async ()=>{ await prepareOrderModal(); openModal('modalOrder'); });
+
+      // close buttons
+      document.querySelectorAll('.btnClose').forEach(b=> b.addEventListener('click', ()=> b.closest('.modal-backdrop')?.classList.add('hidden')));
+      document.querySelectorAll('.modal-backdrop').forEach(m=> m.addEventListener('click', (e)=> { if(e.target === m) m.classList.add('hidden'); }));
+
+      // product
+      document.getElementById('formProduct').addEventListener('submit', async (e)=>{
+        e.preventDefault(); setFormSubmitting('formProduct', true);
+        const name = document.getElementById('prod_name').value.trim();
+        const price = Number(document.getElementById('prod_price').value);
+        const cost = Number(document.getElementById('prod_cost').value);
+        if(!name || !Number.isFinite(price) || price < 0 || !Number.isFinite(cost) || cost < 0){
+          showToast('error','Informe nome, preço e custo válidos'); setFormSubmitting('formProduct', false); return;
+        }
+        const isEditing = editingProductId !== null;
+        const url = isEditing ? `/api/products/${editingProductId}` : '/api/products';
+        const method = isEditing ? 'PATCH' : 'POST';
+        try{
+          const res = await fetch(url,{method,headers:{'content-type':'application/json'},body:JSON.stringify({name,price,cost,source:'interface'})});
+          if(!res.ok){ showToast('error','Erro: '+await res.text()); return; }
+          closeModal('modalProduct'); showToast('success',isEditing ? 'Produto atualizado' : 'Produto criado');
+          editingProductId = null; document.getElementById('formProduct').reset(); loadState();
+        }catch(err){ showToast('error','Erro de rede'); }
+        finally{ setFormSubmitting('formProduct', false); }
+      });
+
+      // ingredient
+      document.getElementById('formIngredient').addEventListener('submit', async (e)=>{ e.preventDefault(); setFormSubmitting('formIngredient', true); const name=document.getElementById('ing_name').value.trim(); const unit=document.getElementById('ing_unit').value; const minStock=parseFloat(document.getElementById('ing_min').value)||0; if(!name){ showToast('error','Nome obrigatório'); setFormSubmitting('formIngredient', false); return; } try{ const res=await fetch('/api/ingredients',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name,unit,minStock})}); if(!res.ok){ const txt=await res.text(); showToast('error','Erro: '+txt); setFormSubmitting('formIngredient', false); return; } closeModal('modalIngredient'); showToast('success','Insumo criado'); loadState(); }catch(err){ showToast('error','Erro de rede'); } finally{ setFormSubmitting('formIngredient', false); } });
+
+      // client
+      document.getElementById('formClient').addEventListener('submit', async (e)=>{ e.preventDefault(); setFormSubmitting('formClient', true); const name=document.getElementById('cl_name').value.trim(); const phone=document.getElementById('cl_phone').value.trim(); const origin=document.getElementById('cl_origin').value.trim(); const notes=document.getElementById('cl_notes').value.trim(); if(!name){ showToast('error','Nome obrigatório'); setFormSubmitting('formClient', false); return; } try{ const res=await fetch('/api/clients',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name,phone,origin,notes})}); if(!res.ok){ const txt=await res.text(); showToast('error','Erro: '+txt); setFormSubmitting('formClient', false); return; } closeModal('modalClient'); showToast('success','Cliente criado'); loadState(); }catch(err){ showToast('error','Erro de rede'); } finally{ setFormSubmitting('formClient', false); } });
+
+      // order modal helpers
+      document.getElementById('btnAddItem').addEventListener('click', addOrderItemRow);
+      document.getElementById('formOrder').addEventListener('submit', async (e)=>{
+        e.preventDefault(); const submitBtn = document.querySelector('#formOrder button[type="submit"]'); setFormSubmitting('formOrder', true);
+        const clientId=parseInt(document.getElementById('order_client').value);
+        const items=Array.from(document.querySelectorAll('#order_items_container .order-item')).map(r=>{ return { productId: parseInt(r.querySelector('.order-prod').value), qty: parseInt(r.querySelector('.order-qty').value)||0 }; }).filter(it=> it.productId && it.qty>0);
+        if(!clientId){ showToast('error','Selecione cliente'); setFormSubmitting('formOrder', false); return; }
+        if(items.length===0){ showToast('error','Adicione ao menos um item'); setFormSubmitting('formOrder', false); return; }
+        // validate against max if available
+        for(const it of items){ const max = estimateMaxForProduct(it.productId); if(max !== null && it.qty > max){ showToast('error', `Quantidade de ${it.productId} maior que estoque (${max})`); setFormSubmitting('formOrder', false); return; } }
+        try{ const res=await fetch('/api/orders',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({clientId,items,type:'Encomenda'})}); if(!res.ok){ const txt=await res.text(); showToast('error','Erro: '+txt); setFormSubmitting('formOrder', false); return; } const data=await res.json(); closeModal('modalOrder'); showToast('success', 'Pedido criado (#'+data.id+')'); loadState(); }catch(err){ showToast('error','Erro de rede'); } finally{ setFormSubmitting('formOrder', false); }
+      });
+
+      loadState();
+    });
+
+    // recipe modal wiring
+    document.getElementById('btnManageRecipes').addEventListener('click', async ()=>{ await prepareRecipeModal(); openModal('modalRecipe'); });
+    document.getElementById('btnAddRecipeItem').addEventListener('click', addRecipeItemRow);
+    document.getElementById('formRecipe').addEventListener('submit', async (e)=>{
+      e.preventDefault(); setFormSubmitting('formRecipe', true);
+      try{
+        const productId = parseInt(document.getElementById('recipe_product').value);
+        const rendimento = Number(document.getElementById('recipe_yield').value);
+        if(!productId || !rendimento || rendimento <= 0){ showToast('error','Produto e rendimento válidos são obrigatórios'); setFormSubmitting('formRecipe', false); return; }
+        const items = Array.from(document.querySelectorAll('#recipe_items_container .recipe-item')).map(r=>{
+          return { ingredientId: parseInt(r.querySelector('.recipe-ing').value), quantidade: Number(r.querySelector('.recipe-qty').value), unidade: r.querySelector('.recipe-unit').value };
+        }).filter(it=> it.ingredientId && it.quantidade > 0);
+        if(items.length===0){ showToast('error','Adicione ao menos um insumo'); setFormSubmitting('formRecipe', false); return; }
+        // normalize units client-side and validate compatibility where possible
+        for(const it of items){ const ing = state.ingredients.find(x=> x.id === it.ingredientId); if(!ing){ showToast('error', 'Insumo não encontrado'); setFormSubmitting('formRecipe', false); return; } if(it.unidade && !canConvert(it.unidade, ing.unit)){ showToast('error', `Unidade ${it.unidade} incompatível com insumo ${ing.name} (${ing.unit})`); setFormSubmitting('formRecipe', false); return; } }
+        // determine if recipe exists to decide between POST and PUT
+        const exists = Object.values(state.recipes).some(r=> r && r.length && state.products.find(p=> p.id === productId && Object.keys(state.recipes).includes(String(productId))));
+        const method = exists ? 'PUT' : 'POST';
+        const url = exists ? `/api/recipes/${productId}` : '/api/recipes';
+        const payload = { productId, rendimento, items };
+        const res = await fetch(url,{ method, headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
+        if(!res.ok){ const txt = await res.text(); showToast('error','Erro: '+txt); setFormSubmitting('formRecipe', false); return; }
+        closeModal('modalRecipe'); showToast('success','Receita salva'); loadState();
+      }catch(err){ showToast('error','Erro de rede'); } finally{ setFormSubmitting('formRecipe', false); }
+    });
+
+    async function prepareOrderModal(){
+      const selClient = document.getElementById('order_client'); selClient.innerHTML=''; state.clients.forEach(c=>{ const o=document.createElement('option'); o.value=c.id; o.text=c.name; selClient.appendChild(o); });
+      // ensure a template row exists
+      const container = document.getElementById('order_items_container'); container.innerHTML = '';
+      addOrderItemRow();
+    }
+
+    async function prepareRecipeModal(){
+      const prodSel = document.getElementById('recipe_product'); prodSel.innerHTML = '<option value="">— selecione produto —</option>';
+      state.products.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.text=`${p.name}`; prodSel.appendChild(o); });
+      document.getElementById('recipe_yield').value = '';
+      const container = document.getElementById('recipe_items_container'); container.innerHTML = '';
+      // if a product currently selected has recipe, populate for edit
+      // default: empty
+      addRecipeItemRow();
+    }
+
+    // Unit conversion utilities
+    const UNIT_NORMALIZE = { 'kg':'g', 'g':'g', 'l':'ml', 'ml':'ml', 'un':'un' };
+    const UNIT_FACTORS = { 'kg-g':1000, 'g-kg':1/1000, 'l-ml':1000, 'ml-l':1/1000 };
+    function normalizeUnit(u){ if(!u) return u; const uu = String(u).toLowerCase(); return UNIT_NORMALIZE[uu] || uu; }
+    function canConvert(from, to){ const a = normalizeUnit(from), b = normalizeUnit(to); if(a===b) return true; return !!UNIT_FACTORS[`${a}-${b}`]; }
+    function convertQuantity(value, fromUnit, toUnit){ fromUnit = normalizeUnit(fromUnit); toUnit = normalizeUnit(toUnit); if(fromUnit === toUnit) return Number(value); const key = `${fromUnit}-${toUnit}`; const f = UNIT_FACTORS[key]; if(f) return Number(value) * f; return null; }
+
+    // Estimate maximum producible units for a product using recipes and current ingredient stocks.
+    function estimateMaxForProduct(productId){
+      const rec = state.recipes[productId] || state.recipes[String(productId)];
+      if(!rec || !rec.length) return null; // unknown
+      let max = Infinity;
+      for(const it of rec){
+        const ingId = it.ingredientId || it.ingrediente_id || it.ingredient_id;
+        const needRaw = Number(it.qty || it.quantidade || 0);
+        if(!needRaw || needRaw <= 0) continue;
+        const ing = state.ingredients.find(x=> x.id == ingId);
+        if(!ing) return null;
+        // determine units: recipe item may include unit property (unit, unidade)
+        const itemUnit = normalizeUnit(it.unit || it.unidade || ing.unit || ing.unidade);
+        const ingUnit = normalizeUnit(ing.unit);
+        // convert need to ingredient unit if possible
+        let needInIngUnit = needRaw;
+        if(itemUnit && ingUnit){
+          if(itemUnit !== ingUnit){
+            if(canConvert(itemUnit, ingUnit)){
+              const conv = convertQuantity(needRaw, itemUnit, ingUnit);
+              if(conv === null) return null;
+              needInIngUnit = conv;
+            }else{
+              // incompatible units (e.g., volume vs mass)
+              return null;
+            }
+          }
+        }
+        const avail = Number(ing.currentStock || 0);
+        const possible = Math.floor(avail / needInIngUnit);
+        max = Math.min(max, possible);
+      }
+      return isFinite(max) ? max : null;
+    }
+
+    function setFormSubmitting(formId, submitting){
+      const form = document.getElementById(formId);
+      if(!form) return;
+      const btn = form.querySelector('button[type="submit"]');
+      if(btn){
+        if(!btn.hasAttribute('data-label')) btn.setAttribute('data-label', btn.textContent);
+        btn.disabled = submitting;
+        btn.textContent = submitting ? 'Enviando...' : btn.getAttribute('data-label');
+      }
+    }
+
+    function addOrderItemRow(){
+      const container = document.getElementById('order_items_container');
+      const row = document.createElement('div'); row.className='order-item grid grid-cols-12 gap-2 items-center';
+      const sel = document.createElement('select'); sel.className='order-prod col-span-7 border rounded px-3 py-2'; state.products.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.text=`${p.name} (${formatCurrency(p.price)})`; sel.appendChild(o); });
+      const inputQty = document.createElement('input'); inputQty.type='number'; inputQty.min='1'; inputQty.value='1'; inputQty.className='order-qty col-span-3 border rounded px-3 py-2';
+      const btn = document.createElement('button'); btn.type='button'; btn.className='btnRemoveItem col-span-2 px-3 py-1 rounded bg-gray-100'; btn.innerText='Remover'; btn.addEventListener('click', ()=> row.remove());
+      // hint row
+      const hint = document.createElement('div'); hint.className='col-span-12 text-sm muted'; hint.style.marginTop='4px';
+      row.appendChild(sel); row.appendChild(inputQty); row.appendChild(btn); container.appendChild(row); container.appendChild(hint);
+
+      async function updateHint(){
+        const pid = parseInt(sel.value);
+        const max = estimateMaxForProduct(pid);
+        if(max === null){ hint.innerText = ''; inputQty.removeAttribute('max'); inputQty.disabled = false; }
+        else{
+          hint.innerText = max <= 0 ? 'Sem estoque suficiente para produzir esse item' : `Máx. disponível: ${max}`;
+          inputQty.max = String(max);
+          if(Number(inputQty.value) > max){ inputQty.value = String(Math.max(0, max)); }
+        }
+      }
+      sel.addEventListener('change', updateHint);
+      // initialize
+      updateHint();
+    }
+
+    // recipe item row UI
+    function addRecipeItemRow(existing){
+      const container = document.getElementById('recipe_items_container');
+      const row = document.createElement('div'); row.className='recipe-item grid grid-cols-12 gap-2 items-center';
+      const sel = document.createElement('select'); sel.className='recipe-ing col-span-6 border rounded px-3 py-2'; state.ingredients.forEach(i=>{ const o=document.createElement('option'); o.value=i.id; o.text=`${i.name} (${i.unit})`; sel.appendChild(o); });
+      const inputQty = document.createElement('input'); inputQty.type='number'; inputQty.step='0.01'; inputQty.value = existing ? String(existing.quantidade||1) : '1'; inputQty.className='recipe-qty col-span-3 border rounded px-3 py-2';
+      const selectUnit = document.createElement('select'); selectUnit.className='recipe-unit col-span-2 border rounded px-3 py-2'; ['g','kg','ml','l','un'].forEach(u=>{ const o=document.createElement('option'); o.value=u; o.text=u; selectUnit.appendChild(o); });
+      const btn = document.createElement('button'); btn.type='button'; btn.className='col-span-1 px-3 py-1 rounded bg-gray-100'; btn.innerText='✕'; btn.addEventListener('click', ()=> row.remove());
+      if(existing){ sel.value = String(existing.ingredientId || existing.ingrediente_id || ''); selectUnit.value = existing.unidade || existing.unit || selectUnit.value; }
+      row.appendChild(sel); row.appendChild(inputQty); row.appendChild(selectUnit); row.appendChild(btn); container.appendChild(row);
+    }
+
+    async function updateOrderStatus(id, patch){ try{ const res = await fetch(`/api/orders/${id}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(patch)}); if(!res.ok){ const txt=await res.text(); showToast('error','Falha: '+txt); return; } showToast('success','Pedido atualizado'); loadState(); }catch(e){ showToast('error','Erro de rede'); } }
+
+  </script>
+</body>
+</html>
