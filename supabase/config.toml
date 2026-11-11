@@ -1,0 +1,4 @@
+project_id = "confeitaria-app"
+
+[functions.api]
+verify_jwt = false

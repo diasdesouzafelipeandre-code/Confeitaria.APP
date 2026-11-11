@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>DoceGestão — Painel</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="supabase-config.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <style>
     .muted{color:#6b7280}
@@ -19,6 +20,23 @@
   </style>
 </head>
 <body class="bg-rose-50 font-sans text-stone-800">
+  <section id="auth-screen" class="min-h-screen flex items-center justify-center p-4">
+    <form id="login-form" class="card w-full max-w-sm space-y-4">
+      <div class="text-center">
+        <i class="fa-solid fa-cake-candles text-3xl text-rose-500"></i>
+        <h1 class="text-xl font-semibold mt-2">Entrar no DoceGestão</h1>
+      </div>
+      <label class="block">E-mail
+        <input id="login-email" type="email" autocomplete="username" class="w-full border rounded px-3 py-2 mt-1" required />
+      </label>
+      <label class="block">Senha
+        <input id="login-password" type="password" autocomplete="current-password" class="w-full border rounded px-3 py-2 mt-1" required />
+      </label>
+      <p id="login-error" class="text-red-600 text-sm" role="alert"></p>
+      <button id="login-submit" type="submit" class="w-full px-3 py-2 bg-rose-500 text-white rounded hover:bg-rose-600">Entrar</button>
+    </form>
+  </section>
+  <div id="app-shell" class="hidden">
   <header class="bg-white shadow sticky top-0 z-30">
     <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
       <div class="flex items-center gap-3">
@@ -33,6 +51,7 @@
         <button id="btnManageRecipes" class="px-3 py-2 bg-rose-500 text-white rounded flex items-center gap-2"><i class="fa-solid fa-book-open"></i> Receita</button>
         <button id="btnAddClient" class="px-3 py-2 bg-rose-500 text-white rounded flex items-center gap-2"><i class="fa-solid fa-user-plus"></i> Cliente</button>
         <button id="btnNewOrder" class="px-3 py-2 bg-amber-500 text-white rounded flex items-center gap-2"><i class="fa-solid fa-file-invoice-dollar"></i> Pedido</button>
+        <button id="btnLogout" class="px-3 py-2 bg-stone-100 rounded" type="button">Sair</button>
       </div>
     </div>
   </header>
@@ -165,7 +184,114 @@
     </div>
   </div>
 
+  </div>
   <script>
+    const nativeFetch = window.fetch.bind(window);
+    const authStorageKey = 'docegestao.auth.session';
+    let authConfig = null;
+    let authSession = null;
+    let refreshPromise = null;
+
+    function setAuthenticated(isAuthenticated){
+      document.getElementById('auth-screen').classList.toggle('hidden', isAuthenticated);
+      document.getElementById('app-shell').classList.toggle('hidden', !isAuthenticated);
+    }
+
+    function clearAuthSession(){
+      authSession = null;
+      sessionStorage.removeItem(authStorageKey);
+      setAuthenticated(false);
+    }
+
+    function saveAuthSession(session){
+      authSession = {
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+        expires_at: session.expires_at || Math.floor(Date.now()/1000) + session.expires_in
+      };
+      sessionStorage.setItem(authStorageKey, JSON.stringify(authSession));
+    }
+
+    async function supabaseAuthRequest(path, body, accessToken){
+      const headers = { 'apikey': authConfig.anonKey, 'content-type': 'application/json' };
+      if(accessToken) headers.Authorization = `Bearer ${accessToken}`;
+      const response = await nativeFetch(`${authConfig.url}/auth/v1/${path}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      });
+      if(!response.ok) throw new Error('Falha na autenticação. Verifique e-mail e senha.');
+      return response.json();
+    }
+
+    async function getAccessToken(){
+      if(!authSession) return null;
+      if(authSession.expires_at > Math.floor(Date.now()/1000) + 60) return authSession.access_token;
+      if(!refreshPromise){
+        refreshPromise = (async ()=>{
+          try{
+            const refreshed = await supabaseAuthRequest('token?grant_type=refresh_token', {
+              refresh_token: authSession.refresh_token
+            });
+            saveAuthSession(refreshed);
+            return authSession.access_token;
+          }catch(error){
+            clearAuthSession();
+            return null;
+          }finally{
+            refreshPromise = null;
+          }
+        })();
+      }
+      return refreshPromise;
+    }
+
+    window.fetch = async (input, init={}) => {
+      const inputUrl = typeof input === 'string' ? input : input.url;
+      const url = new URL(inputUrl, window.location.href);
+      if(!url.pathname.startsWith('/api/')){
+        return nativeFetch(input, init);
+      }
+
+      const token = await getAccessToken();
+      const requestHeaders = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+      requestHeaders.set('apikey', authConfig.anonKey);
+      if(token) requestHeaders.set('Authorization', `Bearer ${token}`);
+      const apiPath = url.pathname.slice('/api'.length);
+      const endpoint = `${authConfig.url}/functions/v1/api${apiPath}${url.search}`;
+      const response = await nativeFetch(endpoint, { ...init, headers: requestHeaders });
+      if(response.status === 401 || response.status === 403){
+        clearAuthSession();
+        document.getElementById('login-error').textContent = response.status === 403
+          ? 'Esta conta não está autorizada para acessar o aplicativo.'
+          : 'Sua sessão expirou. Entre novamente.';
+      }
+      return response;
+    };
+
+    async function initializeAuth(){
+      try{
+        const configured = window.DOCEGESTAO_SUPABASE_CONFIG;
+        authConfig = configured && typeof configured.url === 'string'
+          ? { ...configured, url: configured.url.replace(/\/+$/, '') }
+          : null;
+        if(!authConfig?.url || !authConfig?.anonKey ||
+           authConfig.anonKey === 'COLE_AQUI_A_CHAVE_PUBLISHABLE_DO_SUPABASE'){
+          throw new Error('Configure a URL e a chave publishable em supabase-config.js.');
+        }
+        const stored = sessionStorage.getItem(authStorageKey);
+        if(stored) authSession = JSON.parse(stored);
+        if(authSession && await getAccessToken()){
+          setAuthenticated(true);
+          loadState();
+          return;
+        }
+        clearAuthSession();
+      }catch(error){
+        document.getElementById('login-error').textContent = error.message || 'Não foi possível iniciar a autenticação.';
+      }
+    }
+
     // util
     function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
     function formatCurrency(v){ try{ return new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(Number(v)||0); }catch(e){ return 'R$ '+Number(v||0).toFixed(2); } }
@@ -188,7 +314,11 @@
         state.losses = data.losses||[];
         state.recipes = data.recipes||{};
         renderAll();
-      }catch(e){ console.warn('API fallback', e); renderAll(); }
+      }catch(e){
+        console.error('Unable to load application state:', e);
+        showToast('error', 'Não foi possível carregar os dados do Supabase.');
+        renderAll();
+      }
     }
 
     function renderAll(){
@@ -290,6 +420,38 @@
 
     // wire buttons and forms
     document.addEventListener('DOMContentLoaded', ()=>{
+      document.getElementById('login-form').addEventListener('submit', async (event)=>{
+        event.preventDefault();
+        const submit = document.getElementById('login-submit');
+        const errorNode = document.getElementById('login-error');
+        submit.disabled = true;
+        errorNode.textContent = '';
+        try{
+          if(!authConfig) throw new Error('Configuração de autenticação indisponível.');
+          const session = await supabaseAuthRequest('token?grant_type=password', {
+            email: document.getElementById('login-email').value.trim(),
+            password: document.getElementById('login-password').value
+          });
+          saveAuthSession(session);
+          document.getElementById('login-password').value = '';
+          setAuthenticated(true);
+          loadState();
+        }catch(error){
+          errorNode.textContent = error.message || 'Não foi possível entrar.';
+        }finally{
+          submit.disabled = false;
+        }
+      });
+
+      document.getElementById('btnLogout').addEventListener('click', async ()=>{
+        const token = await getAccessToken();
+        clearAuthSession();
+        if(token){
+          try{ await supabaseAuthRequest('logout', {}, token); }
+          catch(error){ console.warn('Não foi possível encerrar a sessão no Supabase.'); }
+        }
+      });
+
       document.getElementById('btnRefresh').addEventListener('click', loadState);
       document.getElementById('btnAddProduct').addEventListener('click', prepareProductCreate);
       document.getElementById('btnAddIngredient').addEventListener('click', ()=> openModal('modalIngredient'));
@@ -340,7 +502,7 @@
         try{ const res=await fetch('/api/orders',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({clientId,items,type:'Encomenda'})}); if(!res.ok){ const txt=await res.text(); showToast('error','Erro: '+txt); setFormSubmitting('formOrder', false); return; } const data=await res.json(); closeModal('modalOrder'); showToast('success', 'Pedido criado (#'+data.id+')'); loadState(); }catch(err){ showToast('error','Erro de rede'); } finally{ setFormSubmitting('formOrder', false); }
       });
 
-      loadState();
+      initializeAuth();
     });
 
     // recipe modal wiring

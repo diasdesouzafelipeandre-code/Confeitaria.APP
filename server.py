@@ -1,7 +1,13 @@
+import json
+import os
+from datetime import date, datetime
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
 from flask import Flask, jsonify, send_from_directory, request, abort, current_app
 from confeitaria import repository
 from flask import Blueprint
-import sqlite3
+import psycopg
 import math
 
 bp = Blueprint('api', __name__)
@@ -9,8 +15,76 @@ bp = Blueprint('api', __name__)
 
 def create_app():
     app = Flask(__name__, static_folder='static', static_url_path='')
+
+    @app.get('/api/auth-config')
+    def api_auth_config():
+        supabase_url = os.environ.get('SUPABASE_URL')
+        anon_key = os.environ.get('SUPABASE_ANON_KEY')
+        allowed_emails = {
+            email.strip().casefold()
+            for email in os.environ.get('SUPABASE_ALLOWED_EMAILS', '').split(',')
+            if email.strip()
+        }
+        if not supabase_url or not anon_key or not allowed_emails:
+            current_app.logger.error(
+                'SUPABASE_URL, SUPABASE_ANON_KEY and SUPABASE_ALLOWED_EMAILS must be configured'
+            )
+            return jsonify({'error': 'Authentication is not configured'}), 503
+        return jsonify({'url': supabase_url.rstrip('/'), 'anonKey': anon_key})
+
+    @app.before_request
+    def require_supabase_user():
+        if not request.path.startswith('/api/') or request.path == '/api/auth-config':
+            return None
+
+        authorization = request.headers.get('Authorization', '')
+        scheme, _, token = authorization.partition(' ')
+        if scheme.lower() != 'bearer' or not token:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        supabase_url = os.environ.get('SUPABASE_URL')
+        anon_key = os.environ.get('SUPABASE_ANON_KEY')
+        allowed_emails = {
+            email.strip().casefold()
+            for email in os.environ.get('SUPABASE_ALLOWED_EMAILS', '').split(',')
+            if email.strip()
+        }
+        if not supabase_url or not anon_key or not allowed_emails:
+            current_app.logger.error(
+                'SUPABASE_URL, SUPABASE_ANON_KEY and SUPABASE_ALLOWED_EMAILS must be configured'
+            )
+            return jsonify({'error': 'Authentication is not configured'}), 503
+
+        auth_request = Request(
+            f"{supabase_url.rstrip('/')}/auth/v1/user",
+            headers={
+                'apikey': anon_key,
+                'Authorization': f'Bearer {token}',
+                'Accept': 'application/json',
+            },
+        )
+        try:
+            with urlopen(auth_request, timeout=8) as response:
+                user = json.load(response)
+        except HTTPError as error:
+            if error.code in (400, 401, 403):
+                return jsonify({'error': 'Invalid or expired session'}), 401
+            current_app.logger.error('Supabase Auth returned HTTP %s', error.code)
+            return jsonify({'error': 'Authentication service unavailable'}), 503
+        except (URLError, TimeoutError):
+            current_app.logger.exception('Could not reach Supabase Auth')
+            return jsonify({'error': 'Authentication service unavailable'}), 503
+
+        if not isinstance(user, dict) or not user.get('id'):
+            return jsonify({'error': 'Invalid or expired session'}), 401
+        email = user.get('email')
+        if not isinstance(email, str) or email.casefold() not in allowed_emails:
+            return jsonify({'error': 'This account is not authorized to access this application'}), 403
+        return None
+
     app.register_blueprint(bp)
     return app
+
 
 # Unit normalization and conversion factors used across endpoints
 UNIT_NORMALIZE = { 'kg':'g', 'g':'g', 'l':'ml', 'ml':'ml', 'un':'un' }
@@ -33,6 +107,10 @@ def convert_qtd(value, frm, to):
     return float(value) * f if f is not None else None
 
 
+def iso_date(value):
+    return value.isoformat() if isinstance(value, (date, datetime)) else value
+
+
 @bp.route('/')
 def index():
     return send_from_directory(current_app.static_folder, 'index.html')
@@ -49,7 +127,7 @@ def api_state():
     ings = []
     for r in con.execute("SELECT * FROM ingredientes").fetchall():
         rid = r['id']
-        lots = con.execute("SELECT restante, custo_unitario FROM lotes WHERE ingrediente_id = ?", (rid,)).fetchall()
+        lots = con.execute("SELECT restante, custo_unitario FROM lotes WHERE ingrediente_id = %s", (rid,)).fetchall()
         current = sum([l['restante'] for l in lots])
         if current > 0:
             # weighted avg
@@ -57,7 +135,7 @@ def api_state():
             unit_cost = total / current
         else:
             # fallback: last purchase
-            last = con.execute("SELECT custo_unitario FROM lotes WHERE ingrediente_id = ? ORDER BY data DESC LIMIT 1", (rid,)).fetchone()
+            last = con.execute("SELECT custo_unitario FROM lotes WHERE ingrediente_id = %s ORDER BY data DESC LIMIT 1", (rid,)).fetchone()
             unit_cost = last['custo_unitario'] if last else 0
         ings.append({
             'id': rid,
@@ -74,30 +152,35 @@ def api_state():
     # Vendas (brief)
     sales = []
     for v in con.execute("SELECT * FROM vendas").fetchall():
-        items = [dict(i) for i in con.execute("SELECT produto_id as productId, quantidade as qty, preco_unitario as price, custo_unitario as cost FROM itens_venda WHERE venda_id = ?", (v['id'],)).fetchall()]
+        items = [dict(i) for i in con.execute("SELECT produto_id as productId, quantidade as qty, preco_unitario as price, custo_unitario as cost FROM itens_venda WHERE venda_id = %s", (v['id'],)).fetchall()]
         sales.append({
             'id': v['id'],
             'clientId': v['cliente_id'],
             'type': v['tipo'],
-            'date': v['data'],
-            'deliveryDate': v['data_entrega'],
+            'date': iso_date(v['data']),
+            'deliveryDate': iso_date(v['data_entrega']),
             'status': 'entregue' if v['entregue'] else ('cancelada' if v['cancelada'] else 'a_fazer'),
             'paymentStatus': 'Pago' if v['pago'] else 'A Receber',
             'items': items
         })
 
     # Gastos
-    expenses = [dict(e) for e in con.execute("SELECT id, data as date, categoria as category, descricao as description, valor as amount FROM gastos ORDER BY data DESC").fetchall()]
+    expenses = [
+        {**dict(e), 'date': iso_date(e['date'])}
+        for e in con.execute("SELECT id, data as date, categoria as category, descricao as description, valor as amount FROM gastos ORDER BY data DESC").fetchall()
+    ]
 
     # Perdas
     losses = []
     for l in con.execute("SELECT p.id, p.data, p.ingrediente_id as ingredientId, p.quantidade as qty, p.valor as cost, p.motivo as reason FROM perdas p").fetchall():
-        losses.append(dict(l))
+        loss = dict(l)
+        loss['data'] = iso_date(loss['data'])
+        losses.append(loss)
 
     # Receitas (recipes)
     recipes = {}
     for r in con.execute("SELECT r.id, r.produto_id as productId, r.rendimento as yield FROM receitas r").fetchall():
-        items = [dict(it) for it in con.execute("SELECT ingrediente_id as ingredientId, quantidade as qty, unidade as unit FROM itens_receita WHERE receita_id = ?", (r['id'],)).fetchall()]
+        items = [dict(it) for it in con.execute("SELECT ingrediente_id as ingredientId, quantidade as qty, unidade as unit FROM itens_receita WHERE receita_id = %s", (r['id'],)).fetchall()]
         recipes[r['productId']] = items
 
     con.close()
@@ -123,10 +206,10 @@ def api_create_ingredient():
         return abort(400, 'name and unit (g|ml|un) required')
     con = repository.get_db()
     try:
-        cur = con.execute("INSERT INTO ingredientes (nome, unidade, estoque_minimo) VALUES (?,?,?)", (name, unit, min_stock))
+        cur = con.execute("INSERT INTO ingredientes (nome, unidade, estoque_minimo) VALUES (%s,%s,%s) RETURNING id", (name, unit, min_stock))
         con.commit()
-        nid = cur.lastrowid
-        row = con.execute("SELECT id, nome AS name, unidade as unit, estoque_minimo as minStock FROM ingredientes WHERE id = ?", (nid,)).fetchone()
+        nid = cur.fetchone()['id']
+        row = con.execute("SELECT id, nome AS name, unidade as unit, estoque_minimo as minStock FROM ingredientes WHERE id = %s", (nid,)).fetchone()
         return jsonify(dict(row)), 201
     finally:
         con.close()
@@ -142,12 +225,12 @@ def api_create_product():
         return abort(400, 'name required')
     con = repository.get_db()
     try:
-        cur = con.execute("INSERT INTO produtos (nome, custo_unitario, preco_venda) VALUES (?,?,?)", (name, cost, price))
+        cur = con.execute("INSERT INTO produtos (nome, custo_unitario, preco_venda) VALUES (%s,%s,%s) RETURNING id", (name, cost, price))
         con.commit()
-        nid = cur.lastrowid
-        row = con.execute("SELECT id, nome AS name, custo_unitario as unitCost, preco_venda as price FROM produtos WHERE id = ?", (nid,)).fetchone()
+        nid = cur.fetchone()['id']
+        row = con.execute("SELECT id, nome AS name, custo_unitario as unitCost, preco_venda as price FROM produtos WHERE id = %s", (nid,)).fetchone()
         return jsonify(dict(row)), 201
-    except sqlite3.IntegrityError as e:
+    except psycopg.IntegrityError as e:
         con.rollback()
         return abort(400, str(e))
     finally:
@@ -163,7 +246,7 @@ def api_update_product(product_id):
     con = repository.get_db()
     try:
         current = con.execute(
-            'SELECT id, nome, preco_venda, custo_unitario FROM produtos WHERE id = ?',
+            'SELECT id, nome, preco_venda, custo_unitario FROM produtos WHERE id = %s',
             (product_id,),
         ).fetchone()
         if not current:
@@ -191,25 +274,25 @@ def api_update_product(product_id):
         cost_changed = cost != current['custo_unitario']
         with con:
             con.execute(
-                'UPDATE produtos SET nome = ?, preco_venda = ?, custo_unitario = ? WHERE id = ?',
+                'UPDATE produtos SET nome = %s, preco_venda = %s, custo_unitario = %s WHERE id = %s',
                 (name, price, cost, product_id),
             )
             if price_changed or cost_changed:
                 con.execute(
                     '''INSERT INTO historico_precos
                        (produto_id, preco_anterior, preco_novo, custo_anterior, custo_novo, origem)
-                       VALUES (?, ?, ?, ?, ?, ?)''',
+                       VALUES (%s, %s, %s, %s, %s, %s)''',
                     (product_id, current['preco_venda'], price,
                      current['custo_unitario'], cost, data.get('source') or 'api'),
                 )
 
         updated = con.execute(
             'SELECT id, nome AS name, custo_unitario AS unitCost, preco_venda AS price '
-            'FROM produtos WHERE id = ?',
+            'FROM produtos WHERE id = %s',
             (product_id,),
         ).fetchone()
         return jsonify(dict(updated))
-    except sqlite3.IntegrityError as exc:
+    except psycopg.IntegrityError as exc:
         con.rollback()
         return abort(400, str(exc))
     finally:
@@ -220,14 +303,14 @@ def api_update_product(product_id):
 def api_product_price_history(product_id):
     con = repository.get_db()
     try:
-        product = con.execute('SELECT id FROM produtos WHERE id = ?', (product_id,)).fetchone()
+        product = con.execute('SELECT id FROM produtos WHERE id = %s', (product_id,)).fetchone()
         if not product:
             return abort(404, 'product not found')
         history = con.execute(
             '''SELECT id, preco_anterior AS previousPrice, preco_novo AS newPrice,
                       custo_anterior AS previousCost, custo_novo AS newCost,
                       alterado_em AS changedAt, origem AS source
-               FROM historico_precos WHERE produto_id = ?
+               FROM historico_precos WHERE produto_id = %s
                ORDER BY alterado_em DESC, id DESC''',
             (product_id,),
         ).fetchall()
@@ -247,10 +330,10 @@ def api_create_client():
         return abort(400, 'name required')
     con = repository.get_db()
     try:
-        cur = con.execute("INSERT INTO clientes (nome, telefone, origem, observacoes) VALUES (?,?,?,?)", (name, phone, origin, notes))
+        cur = con.execute("INSERT INTO clientes (nome, telefone, origem, observacoes) VALUES (%s,%s,%s,%s) RETURNING id", (name, phone, origin, notes))
         con.commit()
-        nid = cur.lastrowid
-        row = con.execute("SELECT id, nome AS name, telefone, origem AS origin, observacoes as notes FROM clientes WHERE id = ?", (nid,)).fetchone()
+        nid = cur.fetchone()['id']
+        row = con.execute("SELECT id, nome AS name, telefone, origem AS origin, observacoes as notes FROM clientes WHERE id = %s", (nid,)).fetchone()
         return jsonify(dict(row)), 201
     finally:
         con.close()
@@ -273,14 +356,14 @@ def api_create_order():
 
         def estimate_max_units(product_id):
             # find recipe
-            r = con.execute('SELECT id, rendimento FROM receitas WHERE produto_id = ?', (product_id,)).fetchone()
+            r = con.execute('SELECT id, rendimento FROM receitas WHERE produto_id = %s', (product_id,)).fetchone()
             if not r:
                 return None
             receita_id = r['id']
             rendimento = r['rendimento']
             if not rendimento or rendimento <= 0:
                 return None
-            items = con.execute('SELECT ingrediente_id, quantidade, unidade FROM itens_receita WHERE receita_id = ?', (receita_id,)).fetchall()
+            items = con.execute('SELECT ingrediente_id, quantidade, unidade FROM itens_receita WHERE receita_id = %s', (receita_id,)).fetchall()
             if not items:
                 return None
             max_possible = float('inf')
@@ -288,12 +371,12 @@ def api_create_order():
                 ing_id = it['ingrediente_id']
                 need = float(it['quantidade'])
                 item_unit = it['unidade'] if 'unidade' in it.keys() else None
-                ing = con.execute('SELECT id, unidade FROM ingredientes WHERE id = ?', (ing_id,)).fetchone()
+                ing = con.execute('SELECT id, unidade FROM ingredientes WHERE id = %s', (ing_id,)).fetchone()
                 if not ing:
                     return None
                 ing_unit = ing['unidade']
                 # compute total available for ingredient
-                total = con.execute('SELECT COALESCE(SUM(restante),0) as tot FROM lotes WHERE ingrediente_id = ?', (ing_id,)).fetchone()['tot']
+                total = con.execute('SELECT COALESCE(SUM(restante),0) as tot FROM lotes WHERE ingrediente_id = %s', (ing_id,)).fetchone()['tot']
                 # convert need to ingredient unit if units provided
                 need_in_ing_unit = need
                 if item_unit and item_unit != ing_unit:
@@ -323,9 +406,9 @@ def api_create_order():
                 con.close()
                 return abort(400, f'Requested qty for product {pid} exceeds available stock ({qty} > {maxu})')
 
-        cur = con.execute("INSERT INTO vendas (cliente_id, data, tipo, data_entrega, pago, entregue, cancelada) VALUES (?,?,?,?,0,0,0)",
+        cur = con.execute("INSERT INTO vendas (cliente_id, data, tipo, data_entrega, pago, entregue, cancelada) VALUES (%s,%s,%s,%s,FALSE,FALSE,FALSE) RETURNING id",
                           (client_id, date_ or str(__import__('datetime').date.today()), tipo, delivery))
-        venda_id = cur.lastrowid
+        venda_id = cur.fetchone()['id']
         # insert items
         for it in items:
             pid = it.get('productId')
@@ -334,20 +417,20 @@ def api_create_order():
                 con.rollback()
                 return abort(400, 'each item needs productId and qty>0')
             # lookup product prices
-            p = con.execute('SELECT preco_venda, custo_unitario FROM produtos WHERE id = ?', (pid,)).fetchone()
+            p = con.execute('SELECT preco_venda, custo_unitario FROM produtos WHERE id = %s', (pid,)).fetchone()
             if not p:
                 con.rollback()
                 return abort(400, f'product {pid} not found')
             preco_unit = float(it.get('price') or p['preco_venda'] or 0)
             custo_unit = float(p['custo_unitario'] or 0)
-            con.execute('INSERT INTO itens_venda (venda_id, produto_id, quantidade, preco_unitario, custo_unitario) VALUES (?,?,?,?,?)',
+            con.execute('INSERT INTO itens_venda (venda_id, produto_id, quantidade, preco_unitario, custo_unitario) VALUES (%s,%s,%s,%s,%s)',
                         (venda_id, pid, qty, preco_unit, custo_unit))
         con.commit()
         # return created order
-        v = con.execute('SELECT * FROM vendas WHERE id = ?', (venda_id,)).fetchone()
-        items_db = [dict(i) for i in con.execute('SELECT produto_id as productId, quantidade as qty, preco_unitario as price, custo_unitario as cost FROM itens_venda WHERE venda_id = ?', (venda_id,)).fetchall()]
+        v = con.execute('SELECT * FROM vendas WHERE id = %s', (venda_id,)).fetchone()
+        items_db = [dict(i) for i in con.execute('SELECT produto_id as productId, quantidade as qty, preco_unitario as price, custo_unitario as cost FROM itens_venda WHERE venda_id = %s', (venda_id,)).fetchall()]
         return jsonify({
-            'id': v['id'], 'clientId': v['cliente_id'], 'type': v['tipo'], 'date': v['data'], 'deliveryDate': v['data_entrega'], 'status': 'a_fazer', 'items': items_db
+            'id': v['id'], 'clientId': v['cliente_id'], 'type': v['tipo'], 'date': iso_date(v['data']), 'deliveryDate': iso_date(v['data_entrega']), 'status': 'a_fazer', 'items': items_db
         }), 201
     finally:
         con.close()
@@ -358,23 +441,23 @@ def api_update_order(order_id):
     data = request.get_json() or {}
     con = repository.get_db()
     try:
-        v = con.execute('SELECT * FROM vendas WHERE id = ?', (order_id,)).fetchone()
+        v = con.execute('SELECT * FROM vendas WHERE id = %s', (order_id,)).fetchone()
         if not v:
             return abort(404, 'order not found')
         updates = []
         params = []
         if 'paid' in data:
-            updates.append('pago = ?'); params.append(1 if data.get('paid') else 0)
+            updates.append('pago = %s'); params.append(bool(data.get('paid')))
         if 'delivered' in data:
-            updates.append('entregue = ?'); params.append(1 if data.get('delivered') else 0)
+            updates.append('entregue = %s'); params.append(bool(data.get('delivered')))
         if 'canceled' in data:
-            updates.append('cancelada = ?'); params.append(1 if data.get('canceled') else 0)
+            updates.append('cancelada = %s'); params.append(bool(data.get('canceled')))
         if updates:
             params.append(order_id)
-            con.execute(f"UPDATE vendas SET {', '.join(updates)} WHERE id = ?", params)
+            con.execute(f"UPDATE vendas SET {', '.join(updates)} WHERE id = %s", params)
             con.commit()
-        v2 = con.execute('SELECT * FROM vendas WHERE id = ?', (order_id,)).fetchone()
-        items_db = [dict(i) for i in con.execute('SELECT produto_id as productId, quantidade as qty, preco_unitario as price, custo_unitario as cost FROM itens_venda WHERE venda_id = ?', (order_id,)).fetchall()]
+        v2 = con.execute('SELECT * FROM vendas WHERE id = %s', (order_id,)).fetchone()
+        items_db = [dict(i) for i in con.execute('SELECT produto_id as productId, quantidade as qty, preco_unitario as price, custo_unitario as cost FROM itens_venda WHERE venda_id = %s', (order_id,)).fetchall()]
         status = 'entregue' if v2['entregue'] else ('cancelada' if v2['cancelada'] else 'a_fazer')
         return jsonify({ 'id': v2['id'], 'clientId': v2['cliente_id'], 'type': v2['tipo'], 'date': v2['data'], 'deliveryDate': v2['data_entrega'], 'status': status, 'paymentStatus': 'Pago' if v2['pago'] else 'A Receber', 'items': items_db })
     finally:
@@ -392,11 +475,11 @@ def api_create_recipe():
     con = repository.get_db()
     try:
         # ensure product exists
-        prod = con.execute('SELECT id FROM produtos WHERE id = ?', (product_id,)).fetchone()
+        prod = con.execute('SELECT id FROM produtos WHERE id = %s', (product_id,)).fetchone()
         if not prod:
             return abort(400, 'product not found')
         # check existing
-        exists = con.execute('SELECT id FROM receitas WHERE produto_id = ?', (product_id,)).fetchone()
+        exists = con.execute('SELECT id FROM receitas WHERE produto_id = %s', (product_id,)).fetchone()
         if exists:
             return abort(400, 'recipe already exists; use PUT to update')
         # validate items
@@ -406,21 +489,21 @@ def api_create_recipe():
             unit = it.get('unidade') or it.get('unit')
             if not iid or not qtd or float(qtd) <= 0:
                 return abort(400, 'each item needs ingredientId and positive quantidade')
-            ing = con.execute('SELECT id, unidade FROM ingredientes WHERE id = ?', (iid,)).fetchone()
+            ing = con.execute('SELECT id, unidade FROM ingredientes WHERE id = %s', (iid,)).fetchone()
             if not ing:
                 return abort(400, f'ingredient {iid} not found')
             # if unit provided, ensure convertible to ingredient unit or equal
             if unit and not can_convert(unit, ing['unidade']):
                 return abort(400, f'unit {unit} incompatible with ingredient {iid} unit {ing["unidade"]}')
         # create recipe
-        cur = con.execute('INSERT INTO receitas (produto_id, rendimento) VALUES (?,?)', (product_id, rendimento))
-        rid = cur.lastrowid
+        cur = con.execute('INSERT INTO receitas (produto_id, rendimento) VALUES (%s,%s) RETURNING id', (product_id, rendimento))
+        rid = cur.fetchone()['id']
         # insert items
         for it in items:
             iid = it.get('ingredientId')
             qtd = float(it.get('quantidade') or it.get('qty'))
             unit = it.get('unidade') or it.get('unit') or None
-            con.execute('INSERT INTO itens_receita (receita_id, ingrediente_id, quantidade, unidade) VALUES (?,?,?,?)', (rid, iid, qtd, unit))
+            con.execute('INSERT INTO itens_receita (receita_id, ingrediente_id, quantidade, unidade) VALUES (%s,%s,%s,%s)', (rid, iid, qtd, unit))
         con.commit()
         return jsonify({'id': rid, 'productId': product_id}), 201
     finally:
@@ -436,10 +519,10 @@ def api_update_recipe(product_id):
         return abort(400, 'rendimento and items required')
     con = repository.get_db()
     try:
-        prod = con.execute('SELECT id FROM produtos WHERE id = ?', (product_id,)).fetchone()
+        prod = con.execute('SELECT id FROM produtos WHERE id = %s', (product_id,)).fetchone()
         if not prod:
             return abort(400, 'product not found')
-        r = con.execute('SELECT id FROM receitas WHERE produto_id = ?', (product_id,)).fetchone()
+        r = con.execute('SELECT id FROM receitas WHERE produto_id = %s', (product_id,)).fetchone()
         if not r:
             return abort(404, 'recipe not found')
         rid = r['id']
@@ -450,26 +533,28 @@ def api_update_recipe(product_id):
             unit = it.get('unidade') or it.get('unit')
             if not iid or not qtd or float(qtd) <= 0:
                 return abort(400, 'each item needs ingredientId and positive quantidade')
-            ing = con.execute('SELECT id, unidade FROM ingredientes WHERE id = ?', (iid,)).fetchone()
+            ing = con.execute('SELECT id, unidade FROM ingredientes WHERE id = %s', (iid,)).fetchone()
             if not ing:
                 return abort(400, f'ingredient {iid} not found')
             if unit and not can_convert(unit, ing['unidade']):
                 return abort(400, f'unit {unit} incompatible with ingredient {iid} unit {ing["unidade"]}')
         # update receita
-        con.execute('UPDATE receitas SET rendimento = ? WHERE id = ?', (rendimento, rid))
-        con.execute('DELETE FROM itens_receita WHERE receita_id = ?', (rid,))
+        con.execute('UPDATE receitas SET rendimento = %s WHERE id = %s', (rendimento, rid))
+        con.execute('DELETE FROM itens_receita WHERE receita_id = %s', (rid,))
         for it in items:
             iid = it.get('ingredientId')
             qtd = float(it.get('quantidade') or it.get('qty'))
             unit = it.get('unidade') or it.get('unit') or None
-            con.execute('INSERT INTO itens_receita (receita_id, ingrediente_id, quantidade, unidade) VALUES (?,?,?,?)', (rid, iid, qtd, unit))
+            con.execute('INSERT INTO itens_receita (receita_id, ingrediente_id, quantidade, unidade) VALUES (%s,%s,%s,%s)', (rid, iid, qtd, unit))
         con.commit()
         return jsonify({'id': rid, 'productId': product_id})
     finally:
         con.close()
 
 
+app = create_app()
+
+
 if __name__ == '__main__':
-    app = create_app()
     print('Serving on http://127.0.0.1:5000')
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
