@@ -537,16 +537,15 @@ Deno.serve(async (request: Request) => {
 
   const routePrefix = "/functions/v1/api";
   const pathname = new URL(request.url).pathname;
-  if (!pathname.startsWith(routePrefix)) {
-    return fail(404, "Rota não encontrada");
-  }
+  const routePath = pathname.includes(routePrefix)
+    ? pathname.slice(pathname.lastIndexOf(routePrefix) + routePrefix.length) ||
+      "/"
+    : pathname.startsWith("/api/")
+    ? pathname.slice("/api".length)
+    : pathname || "/";
 
   try {
-    return await handleApi(
-      request,
-      db,
-      pathname.slice(routePrefix.length) || "/",
-    );
+    return await handleApi(request, db, routePath);
   } catch (error) {
     console.error(
       "Unhandled API error:",
